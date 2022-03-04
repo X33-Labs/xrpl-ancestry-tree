@@ -3,9 +3,10 @@ var fs = require('fs');
 
 
 var publicServer = "wss://s1.ripple.com/"; //RPC server
-var parentAddress = "rsnVrCbgTG5Q55UsHEnK9QndN4TZ7pCWfb";
+var parentAddress = "rKhTJsxmUS5HTCWBhZVo9oD5D8HNMAmYU";
 var throttle = 0.5 //Number of seconds to throttle each request
-
+var minLedgerIndex = -1 //This will get updated automatically to the Parent's genesis ledger
+var maxLevels = 3 //Max levels to traverse
 
 
 
@@ -30,7 +31,8 @@ function addElements(lineObject, transactions)
     return lineObject;
 }
 
-async function ProcessData(client, rootAccountAddress, node) {
+async function ProcessData(client, rootAccountAddress, node, level) {
+    console.log('Starting Processing on level ' + level.toString());
     var AddressList = []
     let lines = [];
     let marker = undefined;
@@ -71,8 +73,13 @@ async function ProcessData(client, rootAccountAddress, node) {
                     }
                     tn.Address = lines[i].Destination;
                     tn.TransactionHash = lines[i].hash;
-                    let n = await ProcessData(client, tn.Address, tn);
-                    node.children.push(n);
+                    if((level + 1) <= maxLevels)
+                    {
+                        let n = await ProcessData(client, tn.Address, tn, level + 1);
+                        node.children.push(n);
+                    } else {
+                        node.children.push(tn);
+                    }
                 }
             }
         }
@@ -84,6 +91,7 @@ async function getAccountTransactions(client, marker, address) {
     var request = TransactionPayload;
     request.account = address;
     request.limit = 200;
+    request.ledger_index_min = minLedgerIndex;
     if (marker != undefined) {
       request.marker = marker;
     }
@@ -96,6 +104,7 @@ async function checkIfCreatedByParent(parentAddress, childAddress, client) {
     request.account = childAddress;
     request.limit = 1;
     request.marker = undefined;
+    request.ledger_index_min = minLedgerIndex;
     await new Promise((r) => setTimeout(r, throttle * 1000));
     const response = await client.request(request);
     if(response.result.transactions.length > 0)
@@ -111,14 +120,22 @@ async function checkIfCreatedByParent(parentAddress, childAddress, client) {
     return false;
 }
 
+async function UpdateParentGenesisLedger(client, address) {
+    var request = TransactionPayload;
+    request.account = address;
+    request.limit = 1;
+    const response = await client.request(request);
+    minLedgerIndex = response.result.transactions[0].tx.ledger_index;
+}
+
 async function main() {
     const client = new xrpl.Client(publicServer);
   try {
     console.log("Starting to Process");
       let marker = undefined;
       await client.connect();
-      
-      let totalTree = await ProcessData(client,parentAddress,AncestryTree);
+      await UpdateParentGenesisLedger(client,parentAddress)
+      let totalTree = await ProcessData(client, parentAddress, AncestryTree, 1);
       fs.writeFile('output.txt', JSON.stringify(totalTree, null, "\t"), () => {});
       console.log("Finished! Check output.txt");
     } catch(err)
